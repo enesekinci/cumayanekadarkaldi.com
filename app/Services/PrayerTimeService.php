@@ -14,12 +14,16 @@ class PrayerTimeService
 
     public function getFridayTime(string $city): ?string
     {
-        $normalizedCity = $this->normalizeCity($city);
-        $cacheKey = "friday_time_{$normalizedCity}";
+        $weeklyTimes = $this->getWeeklyTimes($city);
+        $nextFriday = $this->getNextFridayDate($city);
 
-        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($normalizedCity) {
-            return $this->fetchFromApi($normalizedCity);
-        });
+        foreach ($weeklyTimes as $day) {
+            if ($day['date'] === $nextFriday->toDateString()) {
+                return $day['dhuhr'];
+            }
+        }
+
+        return null;
     }
 
     public function getNextFridayDateTime(string $city): ?Carbon
@@ -31,22 +35,33 @@ class PrayerTimeService
         }
 
         $now = Carbon::now('Europe/Istanbul');
-        $friday = $now->copy()->next(Carbon::FRIDAY);
-
+        $friday = $this->getNextFridayDate($city);
         [$hour, $minute] = explode(':', $time);
         $friday->setTime((int) $hour, (int) $minute, 0);
 
-        // If we're on Friday and the time hasn't passed yet, use today
-        if ($now->isFriday() && $now->lt($friday->copy()->setDateFrom($now))) {
-            $friday = $now->copy()->setTime((int) $hour, (int) $minute, 0);
+        return $friday;
+    }
+
+    private function getNextFridayDate(string $city): Carbon
+    {
+        $now = Carbon::now('Europe/Istanbul');
+        $friday = $now->copy()->next(Carbon::FRIDAY);
+
+        if ($now->isFriday()) {
+            $friday = $now->copy();
         }
 
         return $friday;
     }
 
-    public function getCityList(): array
+    public function getWeeklyTimes(string $city): array
     {
-        return array_keys($this->getCityMapping());
+        $normalizedCity = $this->normalizeCity($city);
+        $cacheKey = "weekly_times_{$normalizedCity}";
+
+        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($normalizedCity) {
+            return $this->fetchWeeklyFromDiyanet($normalizedCity);
+        });
     }
 
     public function getCityMapping(): array
@@ -136,6 +151,33 @@ class PrayerTimeService
         ];
     }
 
+    public function getCityIds(): array
+    {
+        return [
+            'adana' => 9146, 'adiyaman' => 9158, 'afyonkarahisar' => 9167, 'agri' => 9185,
+            'aksaray' => 9193, 'amasya' => 9198, 'ankara' => 9206, 'antalya' => 9225,
+            'ardahan' => 9238, 'artvin' => 9246, 'aydin' => 9252, 'balikesir' => 9270,
+            'bartin' => 9285, 'batman' => 9288, 'bayburt' => 9295, 'bilecik' => 9297,
+            'bingol' => 9303, 'bitlis' => 9311, 'bolu' => 9315, 'burdur' => 9327,
+            'bursa' => 9335, 'canakkale' => 9352, 'cankiri' => 9359, 'corum' => 9370,
+            'denizli' => 9392, 'diyarbakir' => 9402, 'duzce' => 9414, 'edirne' => 9419,
+            'elazig' => 9432, 'erzincan' => 9440, 'erzurum' => 9451, 'eskisehir' => 9470,
+            'gaziantep' => 9479, 'giresun' => 9494, 'gumushane' => 9501, 'hakkari' => 9507,
+            'hatay' => 20089, 'igdir' => 9522, 'isparta' => 9528, 'istanbul' => 9541,
+            'izmir' => 9560, 'kahramanmaras' => 9577, 'karabuk' => 9581, 'karaman' => 9587,
+            'kars' => 9594, 'kastamonu' => 9609, 'kayseri' => 9620, 'kilis' => 9629,
+            'kirikkale' => 9635, 'kirklareli' => 9638, 'kirsehir' => 9646, 'kocaeli' => 9654,
+            'konya' => 9676, 'kutahya' => 9689, 'malatya' => 9703, 'manisa' => 9716,
+            'mardin' => 9726, 'mersin' => 9737, 'mugla' => 9747, 'mus' => 9755,
+            'nevsehir' => 9760, 'nigde' => 9766, 'ordu' => 9782, 'osmaniye' => 9788,
+            'rize' => 9799, 'sakarya' => 9807, 'samsun' => 9819, 'sanliurfa' => 9831,
+            'siirt' => 9839, 'sinop' => 9847, 'sirnak' => 9854, 'sivas' => 9868,
+            'tekirdag' => 9879, 'tokat' => 9887, 'trabzon' => 9905, 'tunceli' => 9914,
+            'usak' => 9919, 'van' => 9930, 'yalova' => 9935, 'yozgat' => 9949,
+            'zonguldak' => 9955,
+        ];
+    }
+
     public function normalizeCity(string $city): string
     {
         $normalized = mb_strtolower(trim($city), 'UTF-8');
@@ -167,85 +209,59 @@ class PrayerTimeService
         return array_key_exists($this->normalizeCity($city), $this->getCityMapping());
     }
 
-    public function getWeeklyTimes(string $city): array
+    public function getCityId(string $city): ?int
     {
-        $normalizedCity = $this->normalizeCity($city);
-        $cacheKey = "weekly_times_{$normalizedCity}";
-
-        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($normalizedCity) {
-            return $this->fetchWeeklyFromApi($normalizedCity);
-        });
+        $normalized = $this->normalizeCity($city);
+        $ids = $this->getCityIds();
+        
+        return $ids[$normalized] ?? null;
     }
 
-    private function fetchFromApi(string $city): ?string
+    private function fetchWeeklyFromDiyanet(string $city): array
     {
-        $displayCity = $this->formatCityName($city);
-
-        try {
-            $response = Http::timeout(10)
-                ->get('https://api.aladhan.com/v1/timingsByCity', [
-                    'city' => $displayCity,
-                    'country' => 'Turkey',
-                    'method' => 13,
-                ]);
-
-            if ($response->successful()) {
-                $data = $response->json();
-                return $data['data']['timings']['Dhuhr'] ?? null;
-            }
-        } catch (\Exception $e) {
-            Log::error('AlAdhan API error', ['city' => $city, 'error' => $e->getMessage()]);
+        $cityId = $this->getCityId($city);
+        
+        if (!$cityId) {
+            Log::error('Diyanet city ID not found', ['city' => $city]);
+            return [];
         }
-
-        return null;
-    }
-
-    private function fetchWeeklyFromApi(string $city): array
-    {
-        $displayCity = $this->formatCityName($city);
-        $now = Carbon::now('Europe/Istanbul');
 
         try {
             $response = Http::timeout(15)
-                ->get("https://api.aladhan.com/v1/calendarByCity/{$now->year}/{$now->month}", [
-                    'city' => $displayCity,
-                    'country' => 'Turkey',
-                    'method' => 13,
-                ]);
+                ->get("https://ezanvakti.imsakiyem.com/api/prayer-times/{$cityId}/monthly");
 
             if ($response->successful()) {
                 $data = $response->json();
-                $days = $data['data'] ?? [];
-                $result = [];
+                
+                if (!($data['success'] ?? false) || empty($data['data'])) {
+                    Log::warning('Diyanet API empty response', ['city' => $city, 'cityId' => $cityId]);
+                    return [];
+                }
 
-                foreach ($days as $day) {
-                    $date = Carbon::parse($day['date']['gregorian']['date'], 'Europe/Istanbul');
-                    $timings = $day['timings'];
+                $result = [];
+                foreach ($data['data'] as $day) {
+                    $date = Carbon::parse($day['date'])->setTimezone('Europe/Istanbul');
+                    $times = $day['times'] ?? [];
                     
                     $result[] = [
                         'date' => $date->toDateString(),
                         'day_name' => $date->translatedFormat('l'),
-                        'imsak' => $this->cleanTime($timings['Imsak'] ?? ''),
-                        'fajr' => $this->cleanTime($timings['Fajr'] ?? ''),
-                        'sunrise' => $this->cleanTime($timings['Sunrise'] ?? ''),
-                        'dhuhr' => $this->cleanTime($timings['Dhuhr'] ?? ''),
-                        'asr' => $this->cleanTime($timings['Asr'] ?? ''),
-                        'maghrib' => $this->cleanTime($timings['Maghrib'] ?? ''),
-                        'isha' => $this->cleanTime($timings['Isha'] ?? ''),
+                        'imsak' => $times['imsak'] ?? '--:--',
+                        'fajr' => $times['imsak'] ?? '--:--',
+                        'sunrise' => $times['gunes'] ?? '--:--',
+                        'dhuhr' => $times['ogle'] ?? '--:--',
+                        'asr' => $times['ikindi'] ?? '--:--',
+                        'maghrib' => $times['aksam'] ?? '--:--',
+                        'isha' => $times['yatsi'] ?? '--:--',
                     ];
                 }
 
                 return $result;
             }
         } catch (\Exception $e) {
-            Log::error('AlAdhan weekly API error', ['city' => $city, 'error' => $e->getMessage()]);
+            Log::error('Diyanet API error', ['city' => $city, 'cityId' => $cityId, 'error' => $e->getMessage()]);
         }
 
         return [];
-    }
-
-    private function cleanTime(string $time): string
-    {
-        return trim(explode(' ', $time)[0]);
     }
 }

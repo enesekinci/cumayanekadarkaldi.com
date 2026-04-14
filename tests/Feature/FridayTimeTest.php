@@ -46,7 +46,7 @@ class FridayTimeTest extends TestCase
         Cache::flush();
         
         $this->getJson('/api/friday-time?city=ankara');
-        $this->assertTrue(Cache::has('friday_time_ankara'));
+        $this->assertTrue(Cache::has('weekly_times_ankara'));
         
         $response = $this->getJson('/api/friday-time?city=ankara');
         $response->assertStatus(200);
